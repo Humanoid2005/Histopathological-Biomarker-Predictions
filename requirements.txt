@@ -2,3 +2,5 @@ tqdm
 numpy
 openslide-python
 openslide-bin
+torch
+torchvision
