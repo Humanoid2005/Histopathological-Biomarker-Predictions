@@ -12,7 +12,7 @@ if "__main__" == "__main__":
     LR = 1e-3
     WEIGHT_DECAY = 1e-5
     NUM_BAGS = 5
-    SPLITS_DATA_PATH = "/home/pathousr4/sriram-srikanth/Histopathological-Biomarker-Predictions/DTFD-ResNet50/splits"
+    SPLITS_DATA_PATH = "/home/pathousr4/sriram-srikanth/Histopathological-Biomarker-Predictions/DTFD-ResNet50/splits/split_info.csv"
 
     dataset = BiomarkerDataset(GT_CSV_PATH,TRAIN_DATA_PATH,BIOMARKER,SPLITS_DATA_PATH)
     dataset.load_data()
