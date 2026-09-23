@@ -7,13 +7,13 @@ if "__main__" == "__main__":
     # TEST_DATA_PATH = ""
     GT_CSV_PATH = "/home/pathousr4/sriram-srikanth/Histopathological-Biomarker-Predictions/DTFD-ResNet50/ground_truth.csv"
     BIOMARKER = "p53"
-    MODEL_PATH = "/home/pathousr4/sriram-srikanth/Histopathological-Biomarker-Predictions/DTFD-ResNet50/models"
+    MODEL_PATH = "/home/pathousr4/sriram-srikanth/Histopathological-Biomarker-Predictions/DTFD-ResNet50/models/dtfd_model.pth"
     EPOCHS = 10
     LR = 1e-3
     WEIGHT_DECAY = 1e-5
     NUM_BAGS = 5
     SPLITS_DATA_PATH = "/home/pathousr4/sriram-srikanth/Histopathological-Biomarker-Predictions/DTFD-ResNet50/splits/split_info.csv"
-
+    METRICS_PATH = "/home/pathousr4/sriram-srikanth/Histopathological-Biomarker-Predictions/DTFD-ResNet50/metrics"
     dataset = BiomarkerDataset(GT_CSV_PATH,TRAIN_DATA_PATH,BIOMARKER,SPLITS_DATA_PATH)
     dataset.load_data()
 
@@ -26,6 +26,6 @@ if "__main__" == "__main__":
 
     pipeline = BioMarkerPredictor(device,NUM_BAGS)
     pipeline.fit(train_dataloader, val_dataloader,epochs=EPOCHS,lr=LR,weight_decay=WEIGHT_DECAY)
-    pipeline.save_model(MODEL_PATH)
-    #pipeline.load_model(MODEL_PATH)
-    #pipeline.predict(test_dataloader)
+    # pipeline.save_model(MODEL_PATH)
+    pipeline.load_model(MODEL_PATH)
+    pipeline.predict(test_dataloader)
