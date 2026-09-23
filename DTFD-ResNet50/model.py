@@ -1,0 +1,124 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class Bag:
+    def __init__(self):
+        self.patches = []
+
+    def add_patch(self,index,coordinate,embedding):
+        self.patches.append([index,coordinate,embedding])
+
+    def get_patches(self):
+        return self.patches
+
+    def __len__(self):
+        return len(self.patches)
+
+    def __getitem__(self,idx):
+        return self.patches[idx][0],self.patches[idx][1],self.patches[idx][2]
+
+class AttentionModule(nn.Module):
+    def __init__(self, in_features, hidden_dim=256):
+        super().__init__()
+        self.attention_v = nn.Sequential(
+            nn.Linear(in_features, hidden_dim),
+            nn.Tanh()
+        )
+        self.attention_u = nn.Sequential(
+            nn.Linear(in_features, hidden_dim),
+            nn.Sigmoid()
+        )
+        self.attention_weights = nn.Linear(hidden_dim, 1)
+
+    def forward(self, x):
+        A_v = self.attention_v(x)
+        A_u = self.attention_u(x)
+        A = self.attention_weights(A_v * A_u)
+        A = torch.transpose(A, 1, 0) # [1, N]
+        A = F.softmax(A, dim=1) # [1, N]
+        return A
+
+class TierMIL(nn.Module):
+    def __init__(self, in_features, hidden_dim=256, out_classes=1):
+        super().__init__()
+        self.attention = AttentionModule(in_features, hidden_dim)
+        self.classifier = nn.Linear(in_features, out_classes)
+
+    def forward(self, x):
+        # x is [N, in_features]
+        A = self.attention(x) # [1, N]
+        M = torch.mm(A, x)    # [1, in_features]  -> Aggregated Feature (AFS)
+        logits = self.classifier(M) # [1, out_classes]
+        return logits, M, A
+
+class DTFDModel(nn.Module):
+    def __init__(self, in_features, num_bags, out_classes=1, hidden_dim=256):
+        super().__init__()
+        self.in_features = in_features
+        # num_bags here is M, the number of pseudo bags. 
+        self.num_pseudo_bags = num_bags 
+        
+        # Double-Tier Architecture
+        self.tier1 = TierMIL(in_features, hidden_dim, out_classes)
+        self.tier2 = TierMIL(in_features, hidden_dim, out_classes)
+
+    def forward(self, X):
+        """
+        X is expected to be a tensor of shape [Total_Patches, in_features]
+        If it's a dict containing 'embeddings', we extract it first.
+        """
+        if isinstance(X, dict) and "embeddings" in X:
+            embeddings = X["embeddings"]
+        else:
+            embeddings = X
+
+        # Squeeze batch dimension if present (DataLoader with batch_size=1 adds a dimension)
+        if embeddings.dim() == 3 and embeddings.size(0) == 1:
+            embeddings = embeddings.squeeze(0)
+            
+        N = embeddings.size(0)
+        M = self.num_pseudo_bags
+        
+        # If N < M, we just use N pseudo bags
+        if N < M:
+            M = N
+            
+        # Shuffle indices for random partition
+        indices = torch.randperm(N, device=embeddings.device)
+        
+        pseudo_bags = []
+        chunk_size = N // M
+        remainder = N % M
+        
+        start = 0
+        for i in range(M):
+            end = start + chunk_size + (1 if i < remainder else 0)
+            bag_indices = indices[start:end]
+            pseudo_bags.append(embeddings[bag_indices])
+            start = end
+            
+        tier1_logits = []
+        distilled_features = []
+        
+        # Process Tier 1
+        for bag_embeddings in pseudo_bags:
+            # bag_embeddings: [K, in_features]
+            logits, M_feat, A = self.tier1(bag_embeddings)
+            tier1_logits.append(logits)
+            # AFS: Aggregated feature selection
+            distilled_features.append(M_feat.squeeze(0))
+            
+        tier1_logits = torch.cat(tier1_logits, dim=0) # [M, out_classes]
+        distilled_features = torch.stack(distilled_features, dim=0) # [M, in_features]
+        
+        # Process Tier 2
+        tier2_logits, _, tier2_A = self.tier2(distilled_features) # [1, out_classes]
+        
+        return tier1_logits, tier2_logits, tier2_A
+
+    def load_model(self, path):
+        self.load_state_dict(torch.load(path, weights_only=True))
+
+    def save_model(self, path):
+        torch.save(self.state_dict(), path)

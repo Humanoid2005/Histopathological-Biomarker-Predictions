@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from config import PATCHES_PATH, EMBEDDINGS_PATH
+from preprocessing.config import PATCHES_PATH, EMBEDDINGS_PATH
 
 class SlidePatchDataset(Dataset):
     """Custom Dataset to load patches for a single slide."""

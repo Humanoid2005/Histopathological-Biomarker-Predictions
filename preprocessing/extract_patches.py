@@ -25,7 +25,7 @@ from tqdm import tqdm
 cv2.setNumThreads(1)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from config import RAW_WSI_SLIDES_PATH, PATCHES_PATH
+from preprocessing.config import RAW_WSI_SLIDES_PATH, PATCHES_PATH
 
 
 completed_slides = [

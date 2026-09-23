@@ -1,1 +1,0 @@
-https://github.com/lunit-io/benchmark-ssl-pathology/releases
