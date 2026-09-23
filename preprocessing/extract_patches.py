@@ -39,13 +39,22 @@ completed_slides = [
     "IN Brain-0030.tiff", "IN Brain-0031(a).tiff", "IN Brain-0031(b).tiff",
     "IN Brain-0031(c).tiff", "IN Brain-0031(d).tiff", "IN Brain-0034.tiff",
     "IN Brain-0035(a).tiff", "IN Brain-0035(b).tiff", "IN Brain-0036(a).tiff",
-    "IN Brain-0036(b).tiff", "IN Brain-0038.tiff", "IN Brain-0039.tiff",
+    "IN Brain-0036(b).tiff", "IN Brain-0038.tiff",'IN Brain-0050(a).tiff',
+    'IN Brain-0050(b).tiff','IN Brain-0052(a).tiff','IN Brain-0052(b).tiff',
+    'IN Brain-0052(c).tiff','IN Brain-0056.tiff','IN Brain-0057.tiff','IN Brain-0058(a).tiff',
+    'IN Brain-0058(b).tiff','IN Brain-0059(a).tiff','IN Brain-0059(b).tiff','IN Brain-0059(c).tiff',
+    'IN Brain-0060.tiff','IN Brain-0061(a).tiff','IN Brain-0061(b).tiff','IN Brain-0062(a).tiff',
+    'IN Brain-0062(b).tiff','IN Brain-0063(a).tiff','IN Brain-0063(b).tiff','IN Brain-0063(c).tiff'
+]
+
+
+in_personal_harddisk = [
+    "IN Brain-0039.tiff",
     "IN Brain-0040(a).tiff", "IN Brain-0040(b).tiff", "IN Brain-0041(a).tiff",
     "IN Brain-0041(b).tiff", "IN Brain-0042.tiff", "IN Brain-0044(a).tiff",
     "IN Brain-0044(b).tiff", "IN Brain-0045.tiff", "IN Brain-0046.tiff",
-    "IN Brain-0047.tiff", "IN Brain-0048.tiff",
+    "IN Brain-0047.tiff", "IN Brain-0048.tiff"
 ]
-
 # How many (x, y) coordinates get handed to the pool at once, instead of
 # submitting every patch for a slide (can be 50k+) in one shot. Keeps the
 # in-flight Future bookkeeping small and gives natural checkpoints.

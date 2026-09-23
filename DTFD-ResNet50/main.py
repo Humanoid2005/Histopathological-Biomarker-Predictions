@@ -3,6 +3,10 @@ from dataset import BiomarkerDataset, BiomarkerDataLoader
 from pipeline import BioMarkerPredictor
 
 if "__main__" == "__main__":
+    torch.manual_seed(42)
+    import random
+    random.seed(42)
+
     TRAIN_DATA_PATH = "/home/pathousr4/sriram-srikanth/resnet50_embeddings"
     # TEST_DATA_PATH = ""
     GT_CSV_PATH = "/home/pathousr4/sriram-srikanth/Histopathological-Biomarker-Predictions/DTFD-ResNet50/ground_truth.csv"
@@ -26,6 +30,6 @@ if "__main__" == "__main__":
 
     pipeline = BioMarkerPredictor(device,NUM_BAGS,METRICS_PATH)
     pipeline.fit(train_dataloader, val_dataloader,epochs=EPOCHS,lr=LR,weight_decay=WEIGHT_DECAY)
-    # pipeline.save_model(MODEL_PATH)
+    pipeline.save_model(MODEL_PATH)
     pipeline.load_model(MODEL_PATH)
     pipeline.predict(test_dataloader)

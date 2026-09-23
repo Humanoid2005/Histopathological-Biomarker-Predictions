@@ -68,14 +68,21 @@ class DTFDModel(nn.Module):
         X is expected to be a tensor of shape [Total_Patches, in_features]
         If it's a dict containing 'embeddings', we extract it first.
         """
+        patch_names = None
         if isinstance(X, dict) and "embeddings" in X:
             embeddings = X["embeddings"]
+            patch_names = X.get("patch_names", None)
         else:
             embeddings = X
 
         # Squeeze batch dimension if present (DataLoader with batch_size=1 adds a dimension)
         if embeddings.dim() == 3 and embeddings.size(0) == 1:
             embeddings = embeddings.squeeze(0)
+            
+        if patch_names is not None and isinstance(patch_names, (list, tuple)):
+            # DataLoader adds a batch dimension to lists as well (tuple of lists/tuples)
+            if len(patch_names) == 1 and isinstance(patch_names[0], (list, tuple)):
+                patch_names = patch_names[0]
             
         N = embeddings.size(0)
         M = self.num_pseudo_bags
@@ -84,19 +91,52 @@ class DTFDModel(nn.Module):
         if N < M:
             M = N
             
-        # Shuffle indices for random partition
-        indices = torch.randperm(N, device=embeddings.device)
-        
+        # Attempt spatial clustering
         pseudo_bags = []
-        chunk_size = N // M
-        remainder = N % M
+        spatial_success = False
         
-        start = 0
-        for i in range(M):
-            end = start + chunk_size + (1 if i < remainder else 0)
-            bag_indices = indices[start:end]
-            pseudo_bags.append(embeddings[bag_indices])
-            start = end
+        if patch_names is not None and len(patch_names) == N:
+            try:
+                coords = []
+                for name in patch_names:
+                    # name format from extract_patches.py: "X_Y.png"
+                    parts = name.replace('.png', '').replace('.jpg', '').split('_')
+                    if len(parts) >= 2:
+                        coords.append([float(parts[0]), float(parts[1])])
+                    else:
+                        coords.append([0.0, 0.0])
+                
+                from sklearn.cluster import KMeans
+                import numpy as np
+                
+                coords_np = np.array(coords)
+                kmeans = KMeans(n_clusters=M, n_init=1, random_state=42)
+                labels = kmeans.fit_predict(coords_np)
+                
+                for i in range(M):
+                    bag_indices = torch.tensor(np.where(labels == i)[0], dtype=torch.long, device=embeddings.device)
+                    if len(bag_indices) > 0:
+                        pseudo_bags.append(embeddings[bag_indices])
+                        
+                # Ensure we got exactly M bags with no empty clusters
+                if len(pseudo_bags) == M:
+                    spatial_success = True
+            except Exception as e:
+                pass # Fallback to random partition
+                
+        if not spatial_success:
+            pseudo_bags = []
+            # Shuffle indices for random partition fallback
+            indices = torch.randperm(N, device=embeddings.device)
+            chunk_size = N // M
+            remainder = N % M
+            
+            start = 0
+            for i in range(M):
+                end = start + chunk_size + (1 if i < remainder else 0)
+                bag_indices = indices[start:end]
+                pseudo_bags.append(embeddings[bag_indices])
+                start = end
             
         tier1_logits = []
         distilled_features = []
