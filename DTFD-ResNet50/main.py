@@ -24,7 +24,7 @@ if "__main__" == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device",device)
 
-    pipeline = BioMarkerPredictor(device,NUM_BAGS)
+    pipeline = BioMarkerPredictor(device,NUM_BAGS,METRICS_PATH)
     pipeline.fit(train_dataloader, val_dataloader,epochs=EPOCHS,lr=LR,weight_decay=WEIGHT_DECAY)
     # pipeline.save_model(MODEL_PATH)
     pipeline.load_model(MODEL_PATH)
