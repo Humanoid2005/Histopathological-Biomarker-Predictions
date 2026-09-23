@@ -40,28 +40,50 @@ class AttentionModule(nn.Module):
         return A
 
 class TierMIL(nn.Module):
-    def __init__(self, in_features, hidden_dim=256, out_classes=1):
+    def __init__(self, in_features, projected_dim=512, hidden_dim=256, out_classes=1, dropout=0.25):
         super().__init__()
-        self.attention = AttentionModule(in_features, hidden_dim)
-        self.classifier = nn.Linear(in_features, out_classes)
+        
+        # 1. Feature Projection (Adds deep non-linearity)
+        self.projector = nn.Sequential(
+            nn.Linear(in_features, 1024),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(1024, projected_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # 2. Attention Module
+        self.attention = AttentionModule(projected_dim, hidden_dim)
+        
+        # 3. Classifier (Multi-layer instead of single linear)
+        self.classifier = nn.Sequential(
+            nn.Linear(projected_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, out_classes)
+        )
 
     def forward(self, x):
         # x is [N, in_features]
-        A = self.attention(x) # [1, N]
-        M = torch.mm(A, x)    # [1, in_features]  -> Aggregated Feature (AFS)
+        h = self.projector(x) # [N, projected_dim]
+        A = self.attention(h) # [1, N]
+        M = torch.mm(A, h)    # [1, projected_dim]  -> Aggregated Feature (AFS)
         logits = self.classifier(M) # [1, out_classes]
         return logits, M, A
 
 class DTFDModel(nn.Module):
-    def __init__(self, in_features, num_bags, out_classes=1, hidden_dim=256):
+    def __init__(self, in_features, num_bags, out_classes=1, hidden_dim=256, projected_dim=512, dropout=0.25):
         super().__init__()
         self.in_features = in_features
         # num_bags here is M, the number of pseudo bags. 
         self.num_pseudo_bags = num_bags 
         
         # Double-Tier Architecture
-        self.tier1 = TierMIL(in_features, hidden_dim, out_classes)
-        self.tier2 = TierMIL(in_features, hidden_dim, out_classes)
+        # Tier 1 takes original features (2048) and projects to projected_dim
+        self.tier1 = TierMIL(in_features, projected_dim, hidden_dim, out_classes, dropout)
+        # Tier 2 takes the aggregated features from Tier 1, and projects again
+        self.tier2 = TierMIL(projected_dim, projected_dim, hidden_dim, out_classes, dropout)
 
     def forward(self, X):
         """
