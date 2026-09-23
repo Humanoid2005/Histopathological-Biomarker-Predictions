@@ -18,7 +18,7 @@ class BioMarkerPredictor:
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-5)
         self.loss_fn = nn.BCEWithLogitsLoss()
 
-    def fit(self, train_dataloader, val_dataloader=None, epochs=10, lr=0.001, weight_decay=1e-5):
+    def fit(self, train_dataloader, val_dataloader=None, epochs=10, lr=0.001, weight_decay=1e-5, model_save_path=None):
         # Update optimizer params if provided differently
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = lr
@@ -30,6 +30,7 @@ class BioMarkerPredictor:
         # We accumulate gradients over 32 steps to simulate batch_size=32, 
         # while keeping real batch_size=1 to avoid variable-length tensor collation errors.
         accumulation_steps = 32
+        best_auc = 0.0
 
         for epoch in range(epochs):
             self.model.train()
@@ -72,7 +73,14 @@ class BioMarkerPredictor:
                 
             # Validation at end of epoch
             if val_dataloader is not None:
-                self.evaluate(val_dataloader, epoch, epochs)
+                val_auc = self.evaluate(val_dataloader, epoch, epochs)
+                if val_auc > best_auc:
+                    best_auc = val_auc
+                    if model_save_path is not None:
+                        import os
+                        best_path = os.path.join(os.path.dirname(model_save_path), "best_dtfd_model.pth")
+                        print(f"--> New best AUC ({best_auc:.4f})! Saving model to {best_path}")
+                        self.save_model(best_path)
 
     def evaluate(self, dataloader, epoch, epochs):
         self.model.eval()
@@ -111,6 +119,7 @@ class BioMarkerPredictor:
         
         acc, auc, f1, precision, recall = self.save_metrics(all_labels, all_probs, optimal_threshold,epoch)
         print(f"--> Validation Metrics: Acc={acc:.4f}, AUC={auc:.4f}, F1={f1:.4f}, Precision={precision:.4f}, Recall={recall:.4f} (Threshold: {optimal_threshold:.4f})")
+        return auc
 
     def predict(self, test_dataloader):
         print("Starting Prediction on Test Set...")

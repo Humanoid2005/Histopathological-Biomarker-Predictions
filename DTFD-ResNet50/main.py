@@ -29,7 +29,15 @@ if "__main__" == "__main__":
     print("Using device",device)
 
     pipeline = BioMarkerPredictor(device,NUM_BAGS,METRICS_PATH)
-    pipeline.fit(train_dataloader, val_dataloader,epochs=EPOCHS,lr=LR,weight_decay=WEIGHT_DECAY)
+    pipeline.fit(train_dataloader, val_dataloader,epochs=EPOCHS,lr=LR,weight_decay=WEIGHT_DECAY, model_save_path=MODEL_PATH)
     pipeline.save_model(MODEL_PATH)
-    pipeline.load_model(MODEL_PATH)
+    
+    # Load the best model if it was saved during training
+    import os
+    best_model_path = os.path.join(os.path.dirname(MODEL_PATH), "best_dtfd_model.pth")
+    if os.path.exists(best_model_path):
+        pipeline.load_model(best_model_path)
+    else:
+        pipeline.load_model(MODEL_PATH)
+        
     pipeline.predict(test_dataloader)
