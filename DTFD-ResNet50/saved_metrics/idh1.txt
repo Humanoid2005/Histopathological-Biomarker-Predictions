@@ -1,0 +1,9 @@
+Biomarker: IDH1
+Accuracy: 0.9091
+AUC: 0.8333
+F1 Score: 0.8889
+Precision: 1.0000
+Recall: 0.8000
+Optimal Threshold: 0.4531
+
+

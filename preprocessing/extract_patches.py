@@ -24,8 +24,7 @@ from tqdm import tqdm
 # Prevent OpenCV from spinning up its own threads inside our worker threads
 cv2.setNumThreads(1)
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from preprocessing.config import RAW_WSI_SLIDES_PATH, PATCHES_PATH
+from config import RAW_WSI_SLIDES_PATH, PATCHES_PATH
 
 
 completed_slides = [
@@ -55,6 +54,8 @@ in_personal_harddisk = [
     "IN Brain-0044(b).tiff", "IN Brain-0045.tiff", "IN Brain-0046.tiff",
     "IN Brain-0047.tiff", "IN Brain-0048.tiff"
 ]
+
+completed_slides.extend(in_personal_harddisk)
 # How many (x, y) coordinates get handed to the pool at once, instead of
 # submitting every patch for a slide (can be 50k+) in one shot. Keeps the
 # in-flight Future bookkeeping small and gives natural checkpoints.

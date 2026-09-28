@@ -4,3 +4,8 @@ matplotlib
 torch
 tqdm
 scikit-learn
+timm
+opencv-python
+openslide-python
+Pillow
+torchvision

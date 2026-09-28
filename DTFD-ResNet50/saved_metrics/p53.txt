@@ -1,0 +1,8 @@
+Biomarker: P53
+Accuracy: 0.8182
+AUC: 0.7333
+F1 Score: 0.7500
+Precision: 1.0000
+Recall: 0.6000
+Optimal Threshold: 0.5181
+
