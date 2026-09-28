@@ -23,8 +23,20 @@ class SlidePatchDataset(Dataset):
 
     def __getitem__(self, idx):
         img_path = self.file_paths[idx]
-        # Open image and ensure 3 channels (RGB)
-        image = Image.open(img_path).convert('RGB')
+        import time
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Use 'with' to ensure the file handle is properly closed
+                with Image.open(img_path) as img:
+                    image = img.convert('RGB')
+                break
+            except OSError as e:
+                if attempt == max_retries - 1:
+                    print(f"\nWarning: Could not read {img_path} from NAS after {max_retries} attempts. Using blank patch.")
+                    image = Image.new('RGB', (256, 256), color='black')
+                else:
+                    time.sleep(1.0)
         
         if self.transform:
             image = self.transform(image)

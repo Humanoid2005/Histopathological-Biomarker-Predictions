@@ -8,6 +8,8 @@ from tqdm import tqdm
 from pathlib import Path
 import sys
 import timm
+import torch.nn as nn
+from timm.layers import SwiGLUPacked
 
 from config import PATCHES_PATH, EMBEDDINGS_PATH, MODEL_PATH
 
@@ -22,7 +24,20 @@ class SlidePatchDataset(Dataset):
 
     def __getitem__(self, idx):
         img_path = self.file_paths[idx]
-        image = Image.open(img_path).convert('RGB')
+        import time
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Use 'with' to ensure the file handle is properly closed
+                with Image.open(img_path) as img:
+                    image = img.convert('RGB')
+                break
+            except OSError as e:
+                if attempt == max_retries - 1:
+                    print(f"\nWarning: Could not read {img_path} from NAS after {max_retries} attempts. Using blank patch.")
+                    image = Image.new('RGB', (256, 256), color='black')
+                else:
+                    time.sleep(1.0)
         
         if self.transform:
             image = self.transform(image)
@@ -38,6 +53,10 @@ def load_gigapath_flash(weights_path, device):
         "vit_small_patch16_224", 
         pretrained=False, 
         num_classes=0, 
+        act_layer=nn.SiLU,
+        mlp_layer=SwiGLUPacked,
+        mlp_ratio=16/3,
+        init_values=1e-5,
         checkpoint_path=weights_path
     )
     
