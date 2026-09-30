@@ -22,12 +22,12 @@ if __name__ == "__main__":
     SPLITS_DATA_PATH = "./splits/split_info.csv"
     METRICS_PATH     = "./metrics"
 
-    EPOCHS       = 30          # More epochs — with cosine LR scheduler this converges properly
-    LR           = 3e-4        # Lower LR — 1e-3 is too aggressive for attention modules
-    WEIGHT_DECAY = 1e-4        # Slightly stronger regularisation
+    EPOCHS       = 40          # High epochs to let the cosine scheduler smooth it out
+    LR           = 1e-4        # Very low LR to prevent the attention from collapsing
+    WEIGHT_DECAY = 1e-3        # High weight decay (L2 penalty) to stop overfitting
     IN_FEATURES  = 2048        # ResNet50 embedding dimension
     HIDDEN_DIM   = 512         # Larger hidden dim — ResNet50 features are richer than Gigapath
-    NUM_BAGS     = 8           # More pseudo-bags → finer spatial granularity
+    NUM_BAGS     = 5           # Original DTFD paper bag count
     ACCUM_STEPS  = 8           # Gradient accumulation (effective batch = 8 slides)
 
     # ── Dataset ───────────────────────────────────────────────────────────────

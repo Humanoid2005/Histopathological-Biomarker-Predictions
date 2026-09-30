@@ -43,12 +43,9 @@ class TierMIL(nn.Module):
     def __init__(self, in_features, projected_dim=512, hidden_dim=256, out_classes=1, dropout=0.25):
         super().__init__()
         
-        # 1. Feature Projection (Adds deep non-linearity)
+        # 1. Feature Projection (Shallow to prevent massive overfitting on ResNet 2048-dim features)
         self.projector = nn.Sequential(
-            nn.Linear(in_features, 1024),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(1024, projected_dim),
+            nn.Linear(in_features, projected_dim),
             nn.ReLU(),
             nn.Dropout(dropout)
         )
@@ -56,12 +53,10 @@ class TierMIL(nn.Module):
         # 2. Attention Module
         self.attention = AttentionModule(projected_dim, hidden_dim)
         
-        # 3. Classifier (Multi-layer instead of single linear)
+        # 3. Classifier (Shallow linear layer to prevent overfitting)
         self.classifier = nn.Sequential(
-            nn.Linear(projected_dim, 128),
-            nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(128, out_classes)
+            nn.Linear(projected_dim, out_classes)
         )
 
     def forward(self, x):

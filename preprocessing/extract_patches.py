@@ -18,13 +18,32 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import h5py
 import openslide
 from tqdm import tqdm
 
 # Prevent OpenCV from spinning up its own threads inside our worker threads
 cv2.setNumThreads(1)
 
-from config import RAW_WSI_SLIDES_PATH, PATCHES_PATH
+import tempfile
+import os
+import shutil
+
+# --- Configuration ---
+uid = os.getuid()
+
+# GVFS maps the "gio mount" into the local filesystem here:
+BASE_IN_SMB = f"/run/user/{uid}/gvfs/smb-share:server=172.16.201.2,share=prof-sushree/sriram-srikanth/images"
+
+# Note: if you just ran `gio mount smb://ivanbh@172.16.202.70` without `/home`, 
+# the path might be slightly different. We assume the share is 'home'.
+BASE_OUT_SMB = f"/run/user/{uid}/gvfs/smb-share:server=172.16.202.70,share=home/sriram-srikanth/patches"
+
+# Ensure output directory exists locally via the GVFS mount
+try:
+    os.makedirs(BASE_OUT_SMB, exist_ok=True)
+except Exception:
+    pass
 
 
 completed_slides = [
@@ -47,15 +66,15 @@ completed_slides = [
 ]
 
 
-in_personal_harddisk = [
-    "IN Brain-0039.tiff",
-    "IN Brain-0040(a).tiff", "IN Brain-0040(b).tiff", "IN Brain-0041(a).tiff",
-    "IN Brain-0041(b).tiff", "IN Brain-0042.tiff", "IN Brain-0044(a).tiff",
-    "IN Brain-0044(b).tiff", "IN Brain-0045.tiff", "IN Brain-0046.tiff",
-    "IN Brain-0047.tiff", "IN Brain-0048.tiff"
-]
+# in_personal_harddisk = [
+#     "IN Brain-0039.tiff",
+#     "IN Brain-0040(a).tiff", "IN Brain-0040(b).tiff", "IN Brain-0041(a).tiff",
+#     "IN Brain-0041(b).tiff", "IN Brain-0042.tiff", "IN Brain-0044(a).tiff",
+#     "IN Brain-0044(b).tiff", "IN Brain-0045.tiff", "IN Brain-0046.tiff",
+#     "IN Brain-0047.tiff", "IN Brain-0048.tiff"
+# ]
 
-completed_slides.extend(in_personal_harddisk)
+# completed_slides.extend(in_personal_harddisk)
 # How many (x, y) coordinates get handed to the pool at once, instead of
 # submitting every patch for a slide (can be 50k+) in one shot. Keeps the
 # in-flight Future bookkeeping small and gives natural checkpoints.
@@ -110,9 +129,9 @@ def create_tissue_mask(slide, downsample_factor=32):
 
 
 def _extract_one_patch(args):
-    """Executes on a single thread. Returns (success_bool, error_msg)."""
-    tiff_path, output_dir, x, y, patch_size = args
-    save_path = os.path.join(output_dir, f"{x}_{y}.png")
+    """Executes on a single thread. Returns (success_bool, result)."""
+    tiff_path, x, y, patch_size = args
+    name = f"{x}_{y}.png"
 
     try:
         # Fetch the thread-independent slide object
@@ -126,12 +145,12 @@ def _extract_one_patch(args):
         # Convert RGBA (openslide) to BGR (opencv)
         bgr_patch = cv2.cvtColor(patch_np, cv2.COLOR_RGBA2BGR)
 
-        # Use imwrite with fast compression (1) to keep write speeds high
-        success = cv2.imwrite(save_path, bgr_patch, [int(cv2.IMWRITE_PNG_COMPRESSION), 1])
+        # Use imencode with fast compression (1) to keep encode speeds high
+        success, encoded = cv2.imencode('.png', bgr_patch, [int(cv2.IMWRITE_PNG_COMPRESSION), 1])
 
         if not success:
-            return False, f"cv2.imwrite failed at ({x}, {y})"
-        return True, None
+            return False, f"cv2.imencode failed at ({x}, {y})"
+        return True, (name, encoded.tobytes())
 
     except Exception as e:
         return False, str(e)
@@ -164,8 +183,7 @@ def _emergency_exit(log_file, slide_name, saved_count):
 
 def process_slide(tiff_path, output_base_dir, patch_size, num_workers, log_file):
     slide_name = os.path.splitext(os.path.basename(tiff_path))[0]
-    output_dir = os.path.join(output_base_dir, slide_name)
-    os.makedirs(output_dir, exist_ok=True)
+    h5_path = os.path.join(output_base_dir, f"{slide_name}.h5")
 
     saved_count = 0
     try:
@@ -199,27 +217,66 @@ def process_slide(tiff_path, output_base_dir, patch_size, num_workers, log_file)
         pbar = tqdm(total=total_valid, desc=slide_name, file=sys.stdout)
         executor = ThreadPoolExecutor(max_workers=num_workers)
 
-        # Feed the pool in bounded batches rather than submitting every
-        # patch at once. Each batch is polled with a timeout instead of
-        # waiting on it indefinitely, so even if every worker is currently
-        # stuck on a slow NAS write, we still wake up every POLL_TIMEOUT
-        # seconds to check for Ctrl+C.
-        for chunk in _chunked(valid_coords, CHUNK_SIZE):
-            tasks = [(tiff_path, output_dir, x, y, patch_size) for x, y in chunk]
-            pending = {executor.submit(_extract_one_patch, t) for t in tasks}
+        with h5py.File(h5_path, "w", libver="latest") as f:
+            buf = f.create_dataset("image_bytes", shape=(0,), maxshape=(None,), 
+                                   dtype=np.uint8, chunks=(4 * 1024 * 1024,))
+            offsets = []
+            lengths = []
+            names = []
+            
+            acc = bytearray()
+            current_offset = 0
 
-            while pending:
-                done, pending = wait(pending, timeout=POLL_TIMEOUT, return_when=FIRST_COMPLETED)
+            # Feed the pool in bounded batches rather than submitting every
+            # patch at once. Each batch is polled with a timeout instead of
+            # waiting on it indefinitely, so even if every worker is currently
+            # stuck on a slow NAS write, we still wake up every POLL_TIMEOUT
+            # seconds to check for Ctrl+C.
+            for chunk in _chunked(valid_coords, CHUNK_SIZE):
+                tasks = [(tiff_path, x, y, patch_size) for x, y in chunk]
+                pending = {executor.submit(_extract_one_patch, t) for t in tasks}
 
-                for future in done:
-                    success, _err = future.result()
-                    if success:
-                        saved_count += 1
-                    pbar.update(1)
+                while pending:
+                    done, pending = wait(pending, timeout=POLL_TIMEOUT, return_when=FIRST_COMPLETED)
 
-                if stop_event.is_set():
-                    pbar.close()
-                    _emergency_exit(log_file, slide_name, saved_count)
+                    for future in done:
+                        success, result = future.result()
+                        if success:
+                            name, data = result
+                            length = len(data)
+                            if length > 0:
+                                offsets.append(current_offset)
+                                lengths.append(length)
+                                names.append(name)
+                                acc.extend(data)
+                                current_offset += length
+                                
+                                if len(acc) >= 64 * 1024 * 1024:
+                                    old_len = buf.shape[0]
+                                    new_len = old_len + len(acc)
+                                    buf.resize((new_len,))
+                                    buf[old_len:new_len] = np.frombuffer(acc, dtype=np.uint8)
+                                    acc.clear()
+                                    
+                            saved_count += 1
+                        pbar.update(1)
+
+                    if stop_event.is_set():
+                        pbar.close()
+                        executor.shutdown(wait=False)
+                        _emergency_exit(log_file, slide_name, saved_count)
+
+            if acc:
+                old_len = buf.shape[0]
+                new_len = old_len + len(acc)
+                buf.resize((new_len,))
+                buf[old_len:new_len] = np.frombuffer(acc, dtype=np.uint8)
+                acc.clear()
+                
+            if offsets:
+                f.create_dataset("offsets", data=np.array(offsets, dtype=np.int64), compression="gzip", compression_opts=4)
+                f.create_dataset("lengths", data=np.array(lengths, dtype=np.uint32), compression="gzip", compression_opts=4)
+                f.create_dataset("filenames", data=np.array(names, dtype=h5py.string_dtype()), compression="gzip", compression_opts=4)
 
         executor.shutdown(wait=True)
         pbar.close()
@@ -230,40 +287,70 @@ def process_slide(tiff_path, output_base_dir, patch_size, num_workers, log_file)
         return "error", saved_count
 
 
-def extract(tiff_dir_path, output_dir_path, patch_size, num_workers):
-    os.makedirs(output_dir_path, exist_ok=True)
+def extract(patch_size, num_workers):
+    try:
+        filenames = sorted([f for f in os.listdir(BASE_IN_SMB) if f.lower().endswith((".tif", ".tiff"))])
+    except Exception as e:
+        print(f"Failed to list input directory: {e}")
+        print(f"Ensure that {BASE_IN_SMB} is mounted and accessible.")
+        return
 
-    log_path = os.path.join(output_dir_path, "patch_log.csv")
-    write_header = not os.path.exists(log_path)
-    log_file = open(log_path, "a", newline="", encoding="utf-8")
-    log_writer = csv.writer(log_file)
-    if write_header:
-        log_writer.writerow(["filename", "num_patch", "status"])
-        log_file.flush()
-
-    filenames = sorted(os.listdir(tiff_dir_path))
-    pending_slides = [
-        f for f in filenames
-        if f.lower().endswith((".tif", ".tiff")) and f not in completed_slides
-    ]
-
+    pending_slides = [f for f in filenames if f not in completed_slides]
     print(f"Found {len(pending_slides)} slides to process (skipping {len(completed_slides)} already completed).")
 
     for idx, filename in enumerate(pending_slides, start=1):
         if stop_event.is_set():
             break
 
-        tiff_path = os.path.join(tiff_dir_path, filename)
+        slide_name = os.path.splitext(filename)[0]
+        remote_in_file = os.path.join(BASE_IN_SMB, filename)
+        remote_out_file = os.path.join(BASE_OUT_SMB, f"{slide_name}.h5")
+
+        # Check if already exists on output NAS
+        if os.path.exists(remote_out_file):
+            print(f"[{idx}/{len(pending_slides)}] Skipping {filename} (H5 already exists on NAS)")
+            continue
+
         print(f"[{idx}/{len(pending_slides)}] Starting {filename}")
 
-        status, saved_count = process_slide(tiff_path, output_dir_path, patch_size, num_workers, log_file)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_tiff = os.path.join(temp_dir, filename)
+            
+            # Download TIFF locally for faster openslide access
+            try:
+                file_size = os.path.getsize(remote_in_file)
+                with open(remote_in_file, "rb") as f_src:
+                    with open(local_tiff, "wb") as f_dst:
+                        with tqdm(total=file_size, unit="B", unit_scale=True, desc=f"Downloading {filename}") as pbar:
+                            while chunk := f_src.read(1024 * 1024):  # 1MB chunks for stability
+                                f_dst.write(chunk)
+                                pbar.update(len(chunk))
+            except Exception as e:
+                print(f"  [!] Failed to download {filename}: {e}")
+                continue
 
-        print(f"[{idx}/{len(pending_slides)}] Finished {filename} - status={status}, patches={saved_count}")
+            # Process
+            log_file = open(os.devnull, "w") # Ignore logging to file for NAS script
+            status, saved_count = process_slide(local_tiff, temp_dir, patch_size, num_workers, log_file)
+            log_file.close()
 
-        log_writer.writerow([filename, saved_count, status])
-        log_file.flush()
+            print(f"  Finished extracting {filename} locally - status={status}, patches={saved_count}")
 
-    log_file.close()
+            if status == "ok" and saved_count > 0:
+                local_h5 = os.path.join(temp_dir, f"{slide_name}.h5")
+                if os.path.exists(local_h5):
+                    try:
+                        h5_size = os.path.getsize(local_h5)
+                        with open(local_h5, "rb") as f_src:
+                            with open(remote_out_file, "wb") as f_dst:
+                                with tqdm(total=h5_size, unit="B", unit_scale=True, desc=f"Uploading {slide_name}.h5") as pbar:
+                                    while chunk := f_src.read(1024 * 1024): # 1MB chunks
+                                        f_dst.write(chunk)
+                                        pbar.update(len(chunk))
+                        print(f"  Successfully uploaded {slide_name}.h5")
+                    except Exception as e:
+                        print(f"  [!] Failed to upload {slide_name}.h5: {e}")
+
     print("All slides processed.")
 
 
@@ -279,8 +366,6 @@ if __name__ == "__main__":
 
     try:
         extract(
-            RAW_WSI_SLIDES_PATH,
-            PATCHES_PATH,
             patch_size=256,
             num_workers=args.workers,
         )

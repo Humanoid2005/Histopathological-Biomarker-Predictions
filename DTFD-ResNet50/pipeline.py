@@ -51,14 +51,23 @@ class BioMarkerPredictor:
                 with torch.amp.autocast('cuda'):
                     tier1_logits, tier2_logits, _ = self.model(embeddings)
                     
-                    # Tier 1 Loss: all pseudo bags inherit the slide's parent label
-                    tier1_labels = label.expand(tier1_logits.size(0), 1)
-                    loss1 = self.loss_fn(tier1_logits, tier1_labels)
+                    # Tier 1 Loss: True MIL Formulation
+                    # If slide is Negative (0), ALL pseudo-bags are healthy (must be 0).
+                    # If slide is Positive (1), AT LEAST ONE pseudo-bag contains the biomarker.
+                    if label.item() == 0.0:
+                        tier1_labels = label.expand(tier1_logits.size(0), 1)
+                        loss1 = self.loss_fn(tier1_logits, tier1_labels)
+                    else:
+                        # Max-Pooling: Only force the most suspicious pseudo-bag to predict 1!
+                        # This mathematically solves the "forcing healthy tissue to predict 1" bug.
+                        max_tier1_logit = torch.max(tier1_logits).view(1, 1)
+                        loss1 = self.loss_fn(max_tier1_logit, label.view(1, 1))
                     
                     # Tier 2 Loss: parent bag prediction
                     loss2 = self.loss_fn(tier2_logits, label.view(1, 1))
                     
-                    loss = (loss1 + loss2) / accum_steps
+                    # Tier 2 is the main global objective, Tier 1 is a local regularizer
+                    loss = (0.3 * loss1 + loss2) / accum_steps
                 
                 # Scaled Backward pass
                 scaler.scale(loss).backward()
