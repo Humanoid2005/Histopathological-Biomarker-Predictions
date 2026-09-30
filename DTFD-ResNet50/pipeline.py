@@ -18,18 +18,18 @@ class BioMarkerPredictor:
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-5)
         self.loss_fn = nn.BCEWithLogitsLoss()
 
-    def fit(self, train_dataloader, val_dataloader=None, epochs=10, lr=0.001, weight_decay=1e-5, model_save_path=None):
+    def fit(self, train_dataloader, val_dataloader=None, epochs=10, lr=0.001, weight_decay=1e-5, accum_steps=4, model_save_path=None):
         # Update optimizer params if provided differently
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = lr
             param_group['weight_decay'] = weight_decay
             
+        # Add a learning rate scheduler for better convergence
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs)
+            
         # Mixed Precision Scaler for faster training and less memory footprint
         scaler = torch.amp.GradScaler('cuda')
         
-        # We accumulate gradients over 32 steps to simulate batch_size=32, 
-        # while keeping real batch_size=1 to avoid variable-length tensor collation errors.
-        accumulation_steps = 32
         best_auc = 0.0
 
         for epoch in range(epochs):
@@ -58,19 +58,22 @@ class BioMarkerPredictor:
                     # Tier 2 Loss: parent bag prediction
                     loss2 = self.loss_fn(tier2_logits, label.view(1, 1))
                     
-                    loss = (loss1 + loss2) / accumulation_steps
+                    loss = (loss1 + loss2) / accum_steps
                 
                 # Scaled Backward pass
                 scaler.scale(loss).backward()
-                train_loss += loss.item() * accumulation_steps
+                train_loss += loss.item() * accum_steps
                 
-                if (step + 1) % accumulation_steps == 0 or (step + 1) == len(train_dataloader):
+                if (step + 1) % accum_steps == 0 or (step + 1) == len(train_dataloader):
                     scaler.step(self.optimizer)
                     scaler.update()
                     self.optimizer.zero_grad()
                     
-                progress_bar.set_postfix({'loss': f"{train_loss / (step + 1):.4f}"})
+                progress_bar.set_postfix({'loss': f"{train_loss / (step + 1):.4f}", 'lr': f"{scheduler.get_last_lr()[0]:.6f}"})
                 
+            # Step the scheduler after each epoch
+            scheduler.step()
+            
             # Validation at end of epoch
             if val_dataloader is not None:
                 val_auc = self.evaluate(val_dataloader, epoch, epochs)

@@ -1,46 +1,63 @@
 import torch
+import numpy as np
+import random
 from dataset import BiomarkerDataset, BiomarkerDataLoader
 from pipeline import BioMarkerPredictor
+import os
 
-if "__main__" == "__main__":
-    torch.manual_seed(42)
-    import random
-    random.seed(42)
+if __name__ == "__main__":
+    # ── Reproducibility ───────────────────────────────────────────────────────
+    SEED = 42
+    torch.manual_seed(SEED)
+    torch.cuda.manual_seed_all(SEED)
+    np.random.seed(SEED)
+    random.seed(SEED)
+    torch.backends.cudnn.deterministic = True
 
-    # TRAIN_DATA_PATH = "../resnet50_embeddings"
-    TRAIN_DATA_PATH = "/home/pathousr4/sriram-srikanth/gigapath-flash-embeddings"
-    # TEST_DATA_PATH = ""
-    GT_CSV_PATH = "../ground_truth.csv"
-    BIOMARKER = "p53"
-    MODEL_PATH = "./models/dtfd_model.pth"
-    EPOCHS = 10
-    LR = 1e-3
-    IN_FEATURES = 384
-    HIDDEN_DIM = 256
-    WEIGHT_DECAY = 1e-5
-    NUM_BAGS = 5
+    # ── Paths & Hyperparameters ───────────────────────────────────────────────
+    TRAIN_DATA_PATH  = "../resnet50_embeddings"   # 2048-dim ResNet50 features
+    GT_CSV_PATH      = "../ground_truth.csv"
+    BIOMARKER        = "p53"
+    MODEL_PATH       = "./models/dtfd_model.pth"
     SPLITS_DATA_PATH = "./splits/split_info.csv"
-    METRICS_PATH = "./metrics"
-    dataset = BiomarkerDataset(GT_CSV_PATH,TRAIN_DATA_PATH,BIOMARKER,SPLITS_DATA_PATH)
+    METRICS_PATH     = "./metrics"
+
+    EPOCHS       = 30          # More epochs — with cosine LR scheduler this converges properly
+    LR           = 3e-4        # Lower LR — 1e-3 is too aggressive for attention modules
+    WEIGHT_DECAY = 1e-4        # Slightly stronger regularisation
+    IN_FEATURES  = 2048        # ResNet50 embedding dimension
+    HIDDEN_DIM   = 512         # Larger hidden dim — ResNet50 features are richer than Gigapath
+    NUM_BAGS     = 8           # More pseudo-bags → finer spatial granularity
+    ACCUM_STEPS  = 8           # Gradient accumulation (effective batch = 8 slides)
+
+    # ── Dataset ───────────────────────────────────────────────────────────────
+    dataset = BiomarkerDataset(GT_CSV_PATH, TRAIN_DATA_PATH, BIOMARKER, SPLITS_DATA_PATH)
     dataset.load_data()
+    # dataset.analyse() # Optional, prints dataset statistics
 
     train_dataloader = BiomarkerDataLoader(dataset, 'train', 1, shuffle=True)
-    val_dataloader = BiomarkerDataLoader(dataset, 'val', 1, shuffle=False)
-    test_dataloader = BiomarkerDataLoader(dataset, 'val', 1, shuffle=False)
+    val_dataloader   = BiomarkerDataLoader(dataset, 'val',   1, shuffle=False)
+    test_dataloader  = BiomarkerDataLoader(dataset, 'val',   1, shuffle=False)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using device",device)
+    print("Using device", device)
 
-    pipeline = BioMarkerPredictor(device,NUM_BAGS,METRICS_PATH,IN_FEATURES,HIDDEN_DIM)
-    pipeline.fit(train_dataloader, val_dataloader,epochs=EPOCHS,lr=LR,weight_decay=WEIGHT_DECAY, model_save_path=MODEL_PATH)
+    # ── Train ─────────────────────────────────────────────────────────────────
+    pipeline = BioMarkerPredictor(
+        device, NUM_BAGS, METRICS_PATH,
+        in_features=IN_FEATURES,
+        hidden_dim=HIDDEN_DIM
+    )
+    pipeline.fit(
+        train_dataloader, val_dataloader,
+        epochs=EPOCHS, lr=LR,
+        weight_decay=WEIGHT_DECAY,
+        accum_steps=ACCUM_STEPS,
+        model_save_path=MODEL_PATH
+    )
     pipeline.save_model(MODEL_PATH)
-    
-    # Load the best model if it was saved during training
-    import os
+
+    # ── Inference with best checkpoint ────────────────────────────────────────
     best_model_path = os.path.join(os.path.dirname(MODEL_PATH), "best_dtfd_model.pth")
-    if os.path.exists(best_model_path):
-        pipeline.load_model(best_model_path)
-    else:
-        pipeline.load_model(MODEL_PATH)
-        
+    pipeline.load_model(best_model_path if os.path.exists(best_model_path) else MODEL_PATH)
     pipeline.predict(test_dataloader)

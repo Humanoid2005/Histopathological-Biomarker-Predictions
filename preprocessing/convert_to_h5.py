@@ -1,84 +1,125 @@
+"""
+PNG → HDF5 packer, parallel-reader version.
+
+Why this is faster than v1 on a spinning HDD:
+  - N concurrent file reads keep the disk's internal queue full, which lets
+    the drive firmware reorder seeks. A single-threaded reader can't do that.
+  - HDF5 write path is unchanged (batched 64 MB contiguous writes, one thread).
+"""
 import os
-import glob
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+
 import h5py
 import numpy as np
-from PIL import Image
 from tqdm import tqdm
 
 from config import PATCHES_PATH
 
-def create_hdf5_for_slide(slide_dir, output_file, patch_size=256):
-    """
-    Converts a folder of patch images for a single slide into an HDF5 file.
-    """
-    # Grab all png and jpg images
-    image_paths = glob.glob(os.path.join(slide_dir, "*.png"))
-    image_paths.extend(glob.glob(os.path.join(slide_dir, "*.jpg")))
-    image_paths.extend(glob.glob(os.path.join(slide_dir, "*.jpeg")))
-    
-    num_images = len(image_paths)
-    if num_images == 0:
-        return False
-        
-    with h5py.File(output_file, 'w') as h5_file:
-        # Image dataset: optimized with chunking for reading one patch at a time
-        images_ds = h5_file.create_dataset(
-            name="images",
-            shape=(num_images, patch_size, patch_size, 3),
-            dtype=np.uint8,
-            chunks=(1, patch_size, patch_size, 3), 
-            compression="gzip",
-            compression_opts=4
-        )
-        
-        # Metadata dataset: stores the original filenames as UTF-8 strings
-        string_dt = h5py.string_dtype(encoding='utf-8')
-        filenames_ds = h5_file.create_dataset(
-            name="filenames",
-            shape=(num_images,),
-            dtype=string_dt
-        )
+WRITE_CHUNK   = 64 * 1024 * 1024
+EXTS          = (".png", ".jpg", ".jpeg")
+READ_WORKERS  = 32      # try 16 / 32 / 64 — 32 is a good default for one HDD
+IN_FLIGHT     = 4 * READ_WORKERS   # bounded window → caps RAM
 
-        # Iterate and write data
-        for idx, path in enumerate(tqdm(image_paths, desc=f"Writing {os.path.basename(slide_dir)}", leave=False)):
-            try:
-                img = Image.open(path).convert('RGB')
-                
-                # Resize if necessary
-                if img.size != (patch_size, patch_size):
-                    img = img.resize((patch_size, patch_size), Image.Resampling.LANCZOS)
-                
-                # Save to HDF5
-                images_ds[idx] = np.array(img)
-                filenames_ds[idx] = os.path.basename(path)
-                
-            except Exception as e:
-                print(f"\nError processing {path}: {e}")
-                
+
+def _read(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def slide_to_hdf5(slide_dir: str, output_file: str) -> bool:
+    # ---- Pass 1: scandir + stat ------------------------------------------- #
+    entries = []
+    with os.scandir(slide_dir) as it:
+        for e in it:
+            if e.is_file() and e.name.lower().endswith(EXTS):
+                try:
+                    st = e.stat()
+                except OSError:
+                    continue
+                entries.append((e.path, e.name, st.st_size))
+
+    if not entries:
+        return False
+
+    entries.sort(key=lambda x: x[1])
+    n = len(entries)
+
+    sizes = np.fromiter((s for _, _, s in entries), dtype=np.int64, count=n)
+    offsets = np.empty(n, dtype=np.int64)
+    offsets[0] = 0
+    if n > 1:
+        np.cumsum(sizes[:-1], out=offsets[1:])
+    total = int(offsets[-1]) + int(sizes[-1])
+
+    lengths = sizes.astype(np.uint32) if sizes.max() < 2**32 else sizes.astype(np.int64)
+    names   = np.array([nm for _, nm, _ in entries], dtype=h5py.string_dtype())
+
+    # ---- Pass 2: parallel reads, single-threaded HDF5 writes -------------- #
+    with h5py.File(output_file, "w", libver="latest") as f:
+        buf = f.create_dataset("image_bytes", shape=(total,), dtype=np.uint8)
+
+        acc = bytearray()
+        acc_start = 0
+
+        with ThreadPoolExecutor(max_workers=READ_WORKERS) as ex:
+            pending = deque()
+            head = 0
+            # Prime the pipeline
+            while head < n and len(pending) < IN_FLIGHT:
+                pending.append(ex.submit(_read, entries[head][0]))
+                head += 1
+
+            for _ in tqdm(range(n), desc=os.path.basename(slide_dir),
+                          total=n, leave=True, dynamic_ncols=True,
+                          mininterval=1.0):
+                data = pending.popleft().result()
+
+                # Refill the window
+                if head < n:
+                    pending.append(ex.submit(_read, entries[head][0]))
+                    head += 1
+
+                acc.extend(data)
+                if len(acc) >= WRITE_CHUNK:
+                    end = acc_start + len(acc)
+                    buf[acc_start:end] = np.frombuffer(acc, dtype=np.uint8)
+                    acc_start = end
+                    acc.clear()
+
+            if acc:
+                end = acc_start + len(acc)
+                buf[acc_start:end] = np.frombuffer(acc, dtype=np.uint8)
+
+        f.create_dataset("offsets",   data=offsets)
+        f.create_dataset("lengths",   data=lengths)
+        f.create_dataset("filenames", data=names)
+
     return True
+
 
 def main():
     base_dir = PATCHES_PATH
-    # Create an output directory for the H5 files alongside the patches folder
-    output_base_dir = os.path.join(os.path.dirname(base_dir), "patches_h5")
-    os.makedirs(output_base_dir, exist_ok=True)
-    
-    slide_dirs = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
-    print(f"Found {len(slide_dirs)} slide directories in {base_dir}")
-    
-    for slide_name in tqdm(slide_dirs, desc="Processing slides"):
-        slide_dir = os.path.join(base_dir, slide_name)
-        output_file = os.path.join(output_base_dir, f"{slide_name}.h5")
-        
-        # Fault tolerance: Skip if already processed
-        if os.path.exists(output_file):
-            continue 
-            
-        success = create_hdf5_for_slide(slide_dir, output_file)
-        if not success:
-            print(f"Skipped {slide_name} (no patches found).")
-            
-    print(f"\nFinished! HDF5 files saved to: {output_base_dir}")
+    out_dir  = os.path.join(os.path.dirname(base_dir), "h5_patches")
+    os.makedirs(out_dir, exist_ok=True)
+
+    slides = sorted(
+        d for d in os.listdir(base_dir)
+        if os.path.isdir(os.path.join(base_dir, d))
+    )
+    print(f"Found {len(slides)} slides in {base_dir}")
+
+    for name in tqdm(slides, desc="Slides", dynamic_ncols=True, mininterval=1.0):
+        out_file = os.path.join(out_dir, f"{name}.h5")
+        if os.path.exists(out_file):
+            tqdm.write(f"  Skipping {name} (already done)")
+            continue
+        tqdm.write(f"  Processing {name} ...")
+        if not slide_to_hdf5(os.path.join(base_dir, name), out_file):
+            tqdm.write(f"  No patches found in {name}, skipped.")
+
+    print(f"\nDone. Files in: {out_dir}")
+
 
 if __name__ == "__main__":
     main()
