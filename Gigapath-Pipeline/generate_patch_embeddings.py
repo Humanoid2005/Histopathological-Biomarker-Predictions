@@ -25,19 +25,23 @@ class SlidePatchDataset(Dataset):
     def __getitem__(self, idx):
         img_path = self.file_paths[idx]
         import time
-        max_retries = 3
+        import io
+        max_retries = 5
         for attempt in range(max_retries):
             try:
-                # Use 'with' to ensure the file handle is properly closed
-                with Image.open(img_path) as img:
-                    image = img.convert('RGB')
+                # Read entire file into memory instantly to release the NAS file lock.
+                # This stops gvfs from deadlocking when using num_workers > 0
+                with open(img_path, 'rb') as f:
+                    img_bytes = f.read()
+                
+                image = Image.open(io.BytesIO(img_bytes)).convert('RGB')
                 break
-            except OSError as e:
+            except Exception as e:
                 if attempt == max_retries - 1:
                     print(f"\nWarning: Could not read {img_path} from NAS after {max_retries} attempts. Using blank patch.")
                     image = Image.new('RGB', (256, 256), color='black')
                 else:
-                    time.sleep(1.0)
+                    time.sleep(1.0 + (attempt * 0.5)) # Backoff to let NAS recover
         
         if self.transform:
             image = self.transform(image)
@@ -130,11 +134,10 @@ if __name__ == "__main__":
     base_folder = PATCHES_PATH 
     output_folder = EMBEDDINGS_PATH
     tile_encoder_path = os.path.join(MODEL_PATH, "tile_encoder.pth")
-    # model_path is no longer needed as timm fetches weights from Hugging Face
     generate_embeddings(
         BASE_DIR_PATH=base_folder,
         OUTPUT_DIR_PATH=output_folder,
         weights_path=tile_encoder_path,
         batch_size=256, 
-        num_workers=8 
+        num_workers=4 
     )

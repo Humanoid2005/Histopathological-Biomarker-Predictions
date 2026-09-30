@@ -8,14 +8,20 @@ import torch
 if torch.cuda.is_available():
     try:
         if torch.cuda.get_device_capability()[0] > 7:
-            from flash_attn.flash_attn_interface import flash_attn_func as _flash_attn_func
+            try:
+                from flash_attn.flash_attn_interface import flash_attn_func as _flash_attn_func
 
-            def flash_attn_func(q, k, v, dropout=0.0, bias=None, softmax_scale=None, is_causal=False):
-                assert bias is None
-                attn, lse, _ = _flash_attn_func(q, k, v, dropout_p=dropout, softmax_scale=softmax_scale, causal=is_causal, return_attn_probs=True)
-                return attn, lse
-
-        else:
+                def flash_attn_func(q, k, v, dropout=0.0, bias=None, softmax_scale=None, is_causal=False):
+                    assert bias is None
+                    attn, lse, _ = _flash_attn_func(q, k, v, dropout_p=dropout, softmax_scale=softmax_scale, causal=is_causal, return_attn_probs=True)
+                    return attn, lse
+            except ModuleNotFoundError:
+                # Fallback to xformers if flash_attn is not available
+                pass
+            else:
+                flash_attn_func_loaded = True
+        
+        if torch.cuda.get_device_capability()[0] <= 7 or 'flash_attn_func_loaded' not in locals():
             from xformers.ops.fmha import (
                 cutlass,
                 Inputs,
