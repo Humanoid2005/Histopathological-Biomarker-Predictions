@@ -100,6 +100,9 @@ class BiomarkerDataset(Dataset):
         data = torch.load(datapoint.embedding_path)
         label = torch.tensor(datapoint.label, dtype=torch.float32)
         
+        if isinstance(data, dict):
+            data['slide_name'] = Path(datapoint.embedding_path).stem
+            
         return data, label
 
     def save_split_info(self,train_split,val_split,path):

@@ -59,12 +59,13 @@ class Visualiser:
             importance_scores = torch.norm(embeddings.grad, dim=-1).squeeze(0) # Shape: [NumPatches]
             scores_np = importance_scores.cpu().numpy()
             
-            try:
-                slide_name = "_".join(names[0].split("_")[:-2]) if "_" in names[0] else f"slide_{step}"
-            except Exception:
+            if isinstance(data, dict) and "slide_name" in data:
+                slide_name = data["slide_name"]
+                if isinstance(slide_name, (list, tuple)):
+                    slide_name = slide_name[0]
+            else:
                 slide_name = f"slide_{step}"
-            if not slide_name: slide_name = f"slide_{step}"
-            
+                
             # Filter for top 5% of patches
             k = max(1, int(0.05 * len(scores_np)))
             threshold_score = np.sort(scores_np)[-k]
