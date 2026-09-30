@@ -3,8 +3,16 @@ import os
 from h5_reader import PatchesReader
 
 # If you are running this on Ubuntu where it's mounted via GIO:
+import glob
 uid = os.getuid() if hasattr(os, "getuid") else 1000
-linux_path = f"/run/user/{uid}/gvfs/smb-share:server=172.16.202.70,share=home/sriram-srikanth/patches/IN Brain-0002.h5"
+try:
+    server_dir = glob.glob(f"/run/user/{uid}/gvfs/smb-share:server=172.16.202.70*")[0]
+    if os.path.exists(os.path.join(server_dir, "home")):
+        linux_path = os.path.join(server_dir, "home", "sriram-srikanth", "patches", "IN Brain-0002.h5")
+    else:
+        linux_path = os.path.join(server_dir, "sriram-srikanth", "patches", "IN Brain-0002.h5")
+except IndexError:
+    linux_path = "NOT_MOUNTED"
 
 # If you are running this on Windows where you mapped it to Z:
 # (You must run: net use Z: \\172.16.202.70\home i!DT7zDG /user:ivanbh /persistent:yes)

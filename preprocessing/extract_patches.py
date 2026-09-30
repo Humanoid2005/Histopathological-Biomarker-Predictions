@@ -30,14 +30,23 @@ import os
 import shutil
 
 # --- Configuration ---
+import glob
 uid = os.getuid()
 
-# GVFS maps the "gio mount" into the local filesystem here:
-BASE_IN_SMB = f"/run/user/{uid}/gvfs/smb-share:server=172.16.201.2,share=prof-sushree/sriram-srikanth/images"
+def get_gvfs_path(server_ip, share_name, subpath):
+    try:
+        # Find the mounted directory dynamically (ignoring variations in share syntax)
+        server_dir = glob.glob(f"/run/user/{uid}/gvfs/smb-share:server={server_ip}*")[0]
+        # Check if the share name is nested inside
+        if os.path.exists(os.path.join(server_dir, share_name)):
+            return os.path.join(server_dir, share_name, subpath)
+        else:
+            return os.path.join(server_dir, subpath)
+    except IndexError:
+        return f"/run/user/{uid}/gvfs/MISSING_{server_ip}"
 
-# Note: if you just ran `gio mount smb://ivanbh@172.16.202.70` without `/home`, 
-# the path might be slightly different. We assume the share is 'home'.
-BASE_OUT_SMB = f"/run/user/{uid}/gvfs/smb-share:server=172.16.202.70,share=home/sriram-srikanth/patches"
+BASE_IN_SMB = get_gvfs_path("172.16.201.2", "prof-sushree", "sriram-srikanth/images")
+BASE_OUT_SMB = get_gvfs_path("172.16.202.70", "home", "sriram-srikanth/patches")
 
 # Ensure output directory exists locally via the GVFS mount
 try:

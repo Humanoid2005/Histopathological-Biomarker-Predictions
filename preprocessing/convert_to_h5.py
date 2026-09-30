@@ -15,11 +15,21 @@ import numpy as np
 from tqdm import tqdm
 
 # --- Configuration ---
+import glob
 uid = os.getuid()
 
-# GVFS maps the "gio mount" into the local filesystem here:
-BASE_IN_SMB = f"/run/user/{uid}/gvfs/smb-share:server=172.16.201.2,share=prof-sushree/sriram-srikanth/patches"
-BASE_OUT_SMB = f"/run/user/{uid}/gvfs/smb-share:server=172.16.202.70,share=home/sriram-srikanth/patches"
+def get_gvfs_path(server_ip, share_name, subpath):
+    try:
+        server_dir = glob.glob(f"/run/user/{uid}/gvfs/smb-share:server={server_ip}*")[0]
+        if os.path.exists(os.path.join(server_dir, share_name)):
+            return os.path.join(server_dir, share_name, subpath)
+        else:
+            return os.path.join(server_dir, subpath)
+    except IndexError:
+        return f"/run/user/{uid}/gvfs/MISSING_{server_ip}"
+
+BASE_IN_SMB = get_gvfs_path("172.16.201.2", "prof-sushree", "sriram-srikanth/patches")
+BASE_OUT_SMB = get_gvfs_path("172.16.202.70", "home", "sriram-srikanth/patches")
 
 WRITE_CHUNK = 64 * 1024 * 1024
 EXTS = (".png", ".jpg", ".jpeg")
