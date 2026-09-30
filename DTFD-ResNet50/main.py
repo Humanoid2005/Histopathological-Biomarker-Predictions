@@ -7,13 +7,16 @@ if "__main__" == "__main__":
     import random
     random.seed(42)
 
-    TRAIN_DATA_PATH = "../resnet50_embeddings"
+    # TRAIN_DATA_PATH = "../resnet50_embeddings"
+    TRAIN_DATA_PATH = "/home/pathousr4/sriram-srikanth/gigapath-flash-embeddings"
     # TEST_DATA_PATH = ""
     GT_CSV_PATH = "../ground_truth.csv"
     BIOMARKER = "p53"
     MODEL_PATH = "./models/dtfd_model.pth"
     EPOCHS = 10
     LR = 1e-3
+    IN_FEATURES = 384
+    HIDDEN_DIM = 256
     WEIGHT_DECAY = 1e-5
     NUM_BAGS = 5
     SPLITS_DATA_PATH = "./splits/split_info.csv"
@@ -28,7 +31,7 @@ if "__main__" == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device",device)
 
-    pipeline = BioMarkerPredictor(device,NUM_BAGS,METRICS_PATH)
+    pipeline = BioMarkerPredictor(device,NUM_BAGS,METRICS_PATH,IN_FEATURES,HIDDEN_DIM)
     pipeline.fit(train_dataloader, val_dataloader,epochs=EPOCHS,lr=LR,weight_decay=WEIGHT_DECAY, model_save_path=MODEL_PATH)
     pipeline.save_model(MODEL_PATH)
     

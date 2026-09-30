@@ -1,18 +1,18 @@
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from sklearn.metrics import accuracy_score, roc_auc_score, f1_score, precision_score, recall_score
+from sklearn.metrics import accuracy_score, roc_auc_score, f1_score, precision_score, recall_score, confusion_matrix, ConfusionMatrixDisplay
 from model import DTFDModel
 import numpy as np
 from sklearn.metrics import roc_curve
 
 class BioMarkerPredictor:
-    def __init__(self, device,num_bags,metrics_path):
+    def __init__(self, device,num_bags,metrics_path,in_features,hidden_dim=256):
         self.device = device
         self.metrics_path = metrics_path
         # Using num_bags=5 as per DTFD paper for CAMELYON-16. 
         # With 100k patches, M=5 gives 20k patches per pseudo-bag which fits perfectly in GPU RAM
-        self.model = DTFDModel(in_features=2048, num_bags=num_bags, out_classes=1)
+        self.model = DTFDModel(in_features=in_features, num_bags=num_bags, out_classes=1, hidden_dim=hidden_dim)
         self.model.to(device)
         # Setup optimizer and loss
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-5)
@@ -89,7 +89,8 @@ class BioMarkerPredictor:
         val_loss = 0.0
         
         with torch.no_grad():
-            progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs} [Val]")
+            desc = f"Epoch {epoch+1}/{epochs} [Val]" if isinstance(epoch, int) else f"Evaluation [{epoch}]"
+            progress_bar = tqdm(dataloader, desc=desc)
             for data, label in progress_bar:
                 label = label.to(self.device).float()
                 if isinstance(data, dict):
@@ -123,7 +124,12 @@ class BioMarkerPredictor:
 
     def predict(self, test_dataloader):
         print("Starting Prediction on Test Set...")
-        self.evaluate(test_dataloader, epoch=0, epochs=1)
+        self.evaluate(test_dataloader, epoch="test", epochs=1)
+        print("Starting Region of Interest (ROI) extraction and visualization...")
+        
+        from visualisation import Visualiser
+        visualiser = Visualiser(self.model, self.device, self.metrics_path)
+        visualiser.extract_and_visualise_rois(test_dataloader)
 
     def save_metrics(self, all_labels, all_probs, threshold,epoch):
         import os
@@ -157,6 +163,13 @@ class BioMarkerPredictor:
         plt.savefig(os.path.join(self.metrics_path, f'{epoch}_roc_curve.png'))
         plt.close()
         
+        cm = confusion_matrix(all_labels, preds)
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+        disp.plot(cmap=plt.cm.Blues)
+        plt.title('Confusion Matrix')
+        plt.savefig(os.path.join(self.metrics_path, f'{epoch}_confusion_matrix.png'))
+        plt.close()
+        
         with open(os.path.join(self.metrics_path, f'{epoch}_metrics.txt'), 'w') as f:
             f.write(f"Accuracy: {acc:.4f}\n")
             f.write(f"AUC: {auc:.4f}\n")
@@ -164,6 +177,7 @@ class BioMarkerPredictor:
             f.write(f"Precision: {precision:.4f}\n")
             f.write(f"Recall: {recall:.4f}\n")
             f.write(f"Optimal Threshold: {threshold:.4f}\n")
+            f.write(f"Confusion Matrix:\n{cm}\n")
             
         return acc, auc, f1, precision, recall
         
