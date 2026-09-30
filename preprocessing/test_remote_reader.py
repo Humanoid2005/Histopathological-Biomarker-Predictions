@@ -1,46 +1,57 @@
+import smbclient
 import cv2
+import tempfile
 import os
+from tqdm import tqdm
 from h5_reader import PatchesReader
 
-# If you are running this on Ubuntu where it's mounted via GIO:
-import glob
-uid = os.getuid() if hasattr(os, "getuid") else 1000
-try:
-    server_dir = glob.glob(f"/run/user/{uid}/gvfs/smb-share:server=172.16.202.70*")[0]
-    if os.path.exists(os.path.join(server_dir, "home")):
-        linux_path = os.path.join(server_dir, "home", "sriram-srikanth", "patches", "IN Brain-0002.h5")
-    else:
-        linux_path = os.path.join(server_dir, "sriram-srikanth", "patches", "IN Brain-0002.h5")
-except IndexError:
-    linux_path = "NOT_MOUNTED"
+# --- Configuration ---
+OUT_NAS_IP = "172.16.202.70"
+OUT_SHARE = "home"
+OUT_USER = "ivanbh"
+OUT_PASS = "i!DT7zDG"
 
-# If you are running this on Windows where you mapped it to Z:
-# (You must run: net use Z: \\172.16.202.70\home i!DT7zDG /user:ivanbh /persistent:yes)
-windows_path = r"Z:\sriram-srikanth\patches\IN Brain-0002.h5"
+# Crucial: Prevent the NAS from forcefully dropping the connection during long 5GB downloads
+smbclient.ClientConfig(session_timeout=36000)
 
-# Auto-detect which OS you are running the test on
-h5_file = linux_path if os.name == "posix" else windows_path
+print("Authenticating with NAS via smbclient...")
+smbclient.register_session(OUT_NAS_IP, username=OUT_USER, password=OUT_PASS)
 
-print(f"Opening {h5_file} directly via OS mount...")
+remote_h5_file = rf"\\{OUT_NAS_IP}\{OUT_SHARE}\sriram-srikanth\patches\IN Brain-0002.h5"
+print(f"Connecting to NAS and opening {remote_h5_file}...")
 
 try:
-    reader = PatchesReader(h5_path=h5_file, batch_size=4)
-    print(f"Success! Total patches mapped in file: {len(reader)}")
-    
-    if reader.hasNext():
-        images, names = reader.next()
-        print(f"\nRead 1st batch of {len(images)} patches.")
-        print(f"Patch names: {names}")
-        print(f"Image 1 shape: {images[0].shape}")
-        print(f"Image 1 dtype: {images[0].dtype}")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        local_h5 = os.path.join(temp_dir, "IN Brain-0002.h5")
         
-        local_output = "test_extracted_patch.png"
-        cv2.imwrite(local_output, images[0])
-        print(f"\nSaved the first extracted patch locally as '{local_output}' so you can verify it!")
-    
-    reader.close()
-    print("Test complete.")
+        print(f"Downloading {remote_h5_file} locally for safe h5py access...")
+        file_size = smbclient.stat(remote_h5_file).st_size
+        
+        with smbclient.open_file(remote_h5_file, mode="rb") as f_src:
+            with open(local_h5, "wb") as f_dst:
+                with tqdm(total=file_size, unit="B", unit_scale=True, desc="Downloading H5") as pbar:
+                    while chunk := f_src.read(1024 * 1024):
+                        f_dst.write(chunk)
+                        pbar.update(len(chunk))
+        
+        print("File downloaded successfully! Initializing PatchesReader...")
+        
+        reader = PatchesReader(h5_path=local_h5, batch_size=4)
+        print(f"Success! Total patches mapped in file: {len(reader)}")
+        
+        if reader.hasNext():
+            images, names = reader.next()
+            print(f"\nRead 1st batch of {len(images)} patches.")
+            print(f"Patch names: {names}")
+            print(f"Image 1 shape: {images[0].shape}")
+            
+            local_output = "test_extracted_patch.png"
+            cv2.imwrite(local_output, images[0])
+            print(f"\nSaved the first extracted patch locally as '{local_output}' so you can verify it!")
+        
+        reader.close()
+        print("Test complete.")
 
 except Exception as e:
     print(f"\nError: {e}")
-    print("Make sure the NAS is properly mounted to your OS before running this script.")
+    print("If you get a File Not Found error, IN Brain-0002.h5 hasn't finished uploading yet.")

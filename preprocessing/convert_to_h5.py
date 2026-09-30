@@ -14,22 +14,26 @@ import h5py
 import numpy as np
 from tqdm import tqdm
 
+import smbclient
+
 # --- Configuration ---
-import glob
-uid = os.getuid()
+IN_NAS_IP = "172.16.201.2"
+IN_SHARE = "prof-sushree"
+IN_USER = "prof-sushree"
+IN_PASS = "5Qmm*P"
 
-def get_gvfs_path(server_ip, share_name, subpath):
-    try:
-        server_dir = glob.glob(f"/run/user/{uid}/gvfs/smb-share:server={server_ip}*")[0]
-        if os.path.exists(os.path.join(server_dir, share_name)):
-            return os.path.join(server_dir, share_name, subpath)
-        else:
-            return os.path.join(server_dir, subpath)
-    except IndexError:
-        return f"/run/user/{uid}/gvfs/MISSING_{server_ip}"
+OUT_NAS_IP = "172.16.202.70"
+OUT_SHARE = "home"
+OUT_USER = "ivanbh"
+OUT_PASS = "i!DT7zDG"
 
-BASE_IN_SMB = get_gvfs_path("172.16.201.2", "prof-sushree", "sriram-srikanth/patches")
-BASE_OUT_SMB = get_gvfs_path("172.16.202.70", "home", "sriram-srikanth/patches")
+smbclient.ClientConfig(session_timeout=36000)
+
+smbclient.register_session(IN_NAS_IP, username=IN_USER, password=IN_PASS)
+smbclient.register_session(OUT_NAS_IP, username=OUT_USER, password=OUT_PASS)
+
+BASE_IN_SMB = rf"\\{IN_NAS_IP}\{IN_SHARE}\sriram-srikanth\patches"
+BASE_OUT_SMB = rf"\\{OUT_NAS_IP}\{OUT_SHARE}\sriram-srikanth\patches"
 
 WRITE_CHUNK = 64 * 1024 * 1024
 EXTS = (".png", ".jpg", ".jpeg")
@@ -37,16 +41,16 @@ READ_WORKERS = 8
 IN_FLIGHT = 16
 
 def _read_smb(path: str) -> bytes:
-    with open(path, "rb") as f:
+    with smbclient.open_file(path, mode="rb") as f:
         return f.read()
 
 def safe_scandir_smb(slide_dir):
     entries = []
     try:
-        for name in os.listdir(slide_dir):
-            path = os.path.join(slide_dir, name)
-            if os.path.isfile(path) and name.lower().endswith(EXTS):
-                entries.append((path, name))
+        with smbclient.scandir(slide_dir) as it:
+            for e in it:
+                if e.is_file() and e.name.lower().endswith(EXTS):
+                    entries.append((e.path, e.name))
     except Exception as e:
         tqdm.write(f"  [!] scandir failed for {slide_dir}: {e}")
         return []
@@ -137,29 +141,30 @@ def process_slide(slide_dir: str, local_h5_path: str) -> bool:
 
 def main():
     try:
-        slides = [name for name in os.listdir(BASE_IN_SMB) if os.path.isdir(os.path.join(BASE_IN_SMB, name))]
+        slides = [e.name for e in smbclient.scandir(BASE_IN_SMB) if e.is_dir()]
     except Exception as e:
         print(f"Failed to list input directory: {e}")
         return
 
     print(f"Found {len(slides)} slides on Input NAS.")
 
-    # Ensure output directory exists
     try:
-        os.makedirs(BASE_OUT_SMB, exist_ok=True)
+        smbclient.makedirs(BASE_OUT_SMB, exist_ok=True)
     except Exception:
         pass
 
     for name in tqdm(slides, desc="Slides", position=0, dynamic_ncols=True, mininterval=1.0):
-        remote_out_file = os.path.join(BASE_OUT_SMB, f"{name}.h5")
+        remote_out_file = rf"{BASE_OUT_SMB}\{name}.h5"
         
-        # Check if already exists on output NAS
-        if os.path.exists(remote_out_file):
-            tqdm.write(f"  Skipping {name} (already exists on output NAS)")
-            continue
+        try:
+            if smbclient.stat(remote_out_file):
+                tqdm.write(f"  Skipping {name} (already exists on output NAS)")
+                continue
+        except Exception:
+            pass
 
         tqdm.write(f"  Processing {name} ...")
-        slide_path = os.path.join(BASE_IN_SMB, name)
+        slide_path = rf"{BASE_IN_SMB}\{name}"
 
         # Build HDF5 locally in a temporary directory to maximize I/O speed
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -174,9 +179,11 @@ def main():
                 tqdm.write(f"  Uploading {name}.h5 to Output NAS...")
                 h5_size = os.path.getsize(local_h5)
                 with open(local_h5, "rb") as f_src:
-                    with open(remote_out_file, "wb") as f_dst:
-                        while chunk := f_src.read(4 * 1024 * 1024): # 4MB chunks
-                            f_dst.write(chunk)
+                    with smbclient.open_file(remote_out_file, mode="wb") as f_dst:
+                        with tqdm(total=h5_size, unit="B", unit_scale=True, desc=f"Uploading {name}.h5") as pbar:
+                            while chunk := f_src.read(4 * 1024 * 1024): # 4MB chunks
+                                f_dst.write(chunk)
+                                pbar.update(len(chunk))
             except Exception as e:
                 tqdm.write(f"  [!] Failed to upload {name}.h5: {e}")
 

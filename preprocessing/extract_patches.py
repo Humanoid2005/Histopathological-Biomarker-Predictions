@@ -25,32 +25,35 @@ from tqdm import tqdm
 # Prevent OpenCV from spinning up its own threads inside our worker threads
 cv2.setNumThreads(1)
 
+import smbclient
 import tempfile
 import os
-import shutil
 
 # --- Configuration ---
-import glob
-uid = os.getuid()
+IN_NAS_IP = "172.16.201.2"
+IN_SHARE = "prof-sushree"
+IN_USER = "prof-sushree"
+IN_PASS = "5Qmm*P"
 
-def get_gvfs_path(server_ip, share_name, subpath):
-    try:
-        # Find the mounted directory dynamically (ignoring variations in share syntax)
-        server_dir = glob.glob(f"/run/user/{uid}/gvfs/smb-share:server={server_ip}*")[0]
-        # Check if the share name is nested inside
-        if os.path.exists(os.path.join(server_dir, share_name)):
-            return os.path.join(server_dir, share_name, subpath)
-        else:
-            return os.path.join(server_dir, subpath)
-    except IndexError:
-        return f"/run/user/{uid}/gvfs/MISSING_{server_ip}"
+OUT_NAS_IP = "172.16.202.70"
+OUT_SHARE = "home"
+OUT_USER = "ivanbh"
+OUT_PASS = "i!DT7zDG"
 
-BASE_IN_SMB = get_gvfs_path("172.16.201.2", "prof-sushree", "sriram-srikanth/images")
-BASE_OUT_SMB = get_gvfs_path("172.16.202.70", "home", "sriram-srikanth/patches")
+# Crucial: Keep large file uploads/downloads alive
+smbclient.ClientConfig(session_timeout=36000)
 
-# Ensure output directory exists locally via the GVFS mount
+# Register SMB sessions for both servers
+smbclient.register_session(IN_NAS_IP, username=IN_USER, password=IN_PASS)
+smbclient.register_session(OUT_NAS_IP, username=OUT_USER, password=OUT_PASS)
+
+# SMB UNC Paths
+BASE_IN_SMB = rf"\\{IN_NAS_IP}\{IN_SHARE}\sriram-srikanth\images"
+BASE_OUT_SMB = rf"\\{OUT_NAS_IP}\{OUT_SHARE}\sriram-srikanth\patches"
+
+# Ensure output directory exists
 try:
-    os.makedirs(BASE_OUT_SMB, exist_ok=True)
+    smbclient.makedirs(BASE_OUT_SMB, exist_ok=True)
 except Exception:
     pass
 
@@ -298,10 +301,10 @@ def process_slide(tiff_path, output_base_dir, patch_size, num_workers, log_file)
 
 def extract(patch_size, num_workers):
     try:
-        filenames = sorted([f for f in os.listdir(BASE_IN_SMB) if f.lower().endswith((".tif", ".tiff"))])
+        entries = smbclient.scandir(BASE_IN_SMB)
+        filenames = sorted([e.name for e in entries if e.is_file() and e.name.lower().endswith((".tif", ".tiff"))])
     except Exception as e:
-        print(f"Failed to list input directory: {e}")
-        print(f"Ensure that {BASE_IN_SMB} is mounted and accessible.")
+        print(f"Failed to list input directory via smbclient: {e}")
         return
 
     pending_slides = [f for f in filenames if f not in completed_slides]
@@ -312,13 +315,16 @@ def extract(patch_size, num_workers):
             break
 
         slide_name = os.path.splitext(filename)[0]
-        remote_in_file = os.path.join(BASE_IN_SMB, filename)
-        remote_out_file = os.path.join(BASE_OUT_SMB, f"{slide_name}.h5")
+        remote_in_file = rf"{BASE_IN_SMB}\{filename}"
+        remote_out_file = rf"{BASE_OUT_SMB}\{slide_name}.h5"
 
         # Check if already exists on output NAS
-        if os.path.exists(remote_out_file):
-            print(f"[{idx}/{len(pending_slides)}] Skipping {filename} (H5 already exists on NAS)")
-            continue
+        try:
+            if smbclient.stat(remote_out_file):
+                print(f"[{idx}/{len(pending_slides)}] Skipping {filename} (H5 already exists on NAS)")
+                continue
+        except Exception:
+            pass
 
         print(f"[{idx}/{len(pending_slides)}] Starting {filename}")
 
@@ -327,11 +333,11 @@ def extract(patch_size, num_workers):
             
             # Download TIFF locally for faster openslide access
             try:
-                file_size = os.path.getsize(remote_in_file)
-                with open(remote_in_file, "rb") as f_src:
+                file_size = smbclient.stat(remote_in_file).st_size
+                with smbclient.open_file(remote_in_file, mode="rb") as f_src:
                     with open(local_tiff, "wb") as f_dst:
                         with tqdm(total=file_size, unit="B", unit_scale=True, desc=f"Downloading {filename}") as pbar:
-                            while chunk := f_src.read(1024 * 1024):  # 1MB chunks for stability
+                            while chunk := f_src.read(1024 * 1024):  # 1MB chunks
                                 f_dst.write(chunk)
                                 pbar.update(len(chunk))
             except Exception as e:
@@ -339,7 +345,7 @@ def extract(patch_size, num_workers):
                 continue
 
             # Process
-            log_file = open(os.devnull, "w") # Ignore logging to file for NAS script
+            log_file = open(os.devnull, "w")
             status, saved_count = process_slide(local_tiff, temp_dir, patch_size, num_workers, log_file)
             log_file.close()
 
@@ -351,7 +357,7 @@ def extract(patch_size, num_workers):
                     try:
                         h5_size = os.path.getsize(local_h5)
                         with open(local_h5, "rb") as f_src:
-                            with open(remote_out_file, "wb") as f_dst:
+                            with smbclient.open_file(remote_out_file, mode="wb") as f_dst:
                                 with tqdm(total=h5_size, unit="B", unit_scale=True, desc=f"Uploading {slide_name}.h5") as pbar:
                                     while chunk := f_src.read(1024 * 1024): # 1MB chunks
                                         f_dst.write(chunk)
