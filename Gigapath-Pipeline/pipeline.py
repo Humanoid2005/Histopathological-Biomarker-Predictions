@@ -117,7 +117,8 @@ class BioMarkerPredictor:
         val_loss = 0.0
         
         with torch.no_grad():
-            progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs} [Val]")
+            desc = f"Epoch {epoch+1}/{epochs} [Val]" if isinstance(epoch, int) else f"Evaluation [{epoch}]"
+            progress_bar = tqdm(dataloader, desc=desc)
             for data, label in progress_bar:
                 label = label.to(self.device).float()
                 

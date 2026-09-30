@@ -17,9 +17,12 @@ class GigapathFlashClassifier(nn.Module):
             drop_path_rate=0.0
         )
         
-        # Freeze the slide encoder parameters as per Gradient-Based Attribution requirements
-        for param in self.slide_enc.parameters():
-            param.requires_grad = False
+        # Freeze most of the slide encoder, but unfreeze the last 2 layers and final norm
+        for name, param in self.slide_enc.named_parameters():
+            if "layers.10" in name or "layers.11" in name or "norm" in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
             
         # Add a classification head
         self.head = nn.Linear(384, num_classes)
